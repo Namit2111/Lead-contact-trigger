@@ -1,14 +1,16 @@
 /**
  * AI Reply Agent using Vercel AI SDK + Gemini 2.0 Flash
- * Simple reply generation - no tool calling for now
+ * With calendar tools for availability and booking
  */
-import { generateText } from 'ai';
+import { generateText, tool } from 'ai';
 import { google } from '@ai-sdk/google';
+import { z } from 'zod';
 
 export interface EmailContext {
     originalSubject: string;
     contactEmail: string;
     contactName?: string;
+    userId: string;  // User ID for calendar API calls
     replySubject: string;
     replyBody: string;
     conversationHistory: Array<{
@@ -21,10 +23,154 @@ export interface EmailContext {
     customPrompt?: string;  // Custom AI prompt (undefined = use default)
 }
 
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000';
+
+// Calendar helper functions
+interface CalendarAvailability {
+    connected: boolean;
+    available_slots: Array<{
+        date: string;
+        time: string;
+        start_iso: string;
+        end_iso: string;
+        duration: string;
+        timezone: string;
+    }>;
+    booking_link: string | null;
+    event_type_name?: string;
+    error?: string;
+}
+
+interface BookingResult {
+    success: boolean;
+    booking_id?: string;
+    booking_url?: string;
+    error?: string;
+}
+
+async function getCalendarAvailability(userId: string, daysAhead: number = 30): Promise<CalendarAvailability> {
+    try {
+        const url = `${BACKEND_URL}/calendar/availability?days=${daysAhead}&timezone=UTC`;
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-User-Id': userId,
+            },
+        });
+
+        if (!response.ok) {
+            return {
+                connected: false,
+                available_slots: [],
+                booking_link: null,
+                error: `Backend error ${response.status}`,
+            };
+        }
+
+        const data = await response.json();
+
+        if (!data.connected) {
+            return {
+                connected: false,
+                available_slots: [],
+                booking_link: null,
+                event_type_name: data.event_type_name,
+                error: data.error || 'Calendar not connected',
+            };
+        }
+
+        const slots = (data.slots || []).slice(0, 30);
+        const formattedSlots = slots.map((slot: any) => {
+            const start = new Date(slot.start);
+            const end = slot.end ? new Date(slot.end) : new Date(start.getTime() + 30 * 60000);
+            const duration = Math.round((end.getTime() - start.getTime()) / 60000);
+            return {
+                date: start.toISOString().split('T')[0],
+                time: start.toISOString().split('T')[1].split('.')[0],
+                start_iso: start.toISOString(),
+                end_iso: end.toISOString(),
+                duration: `${duration}min`,
+                timezone: slot.time_zone || 'UTC',
+            };
+        });
+
+        return {
+            connected: true,
+            available_slots: formattedSlots,
+            booking_link: data.booking_link || null,
+            event_type_name: data.event_type_name,
+        };
+    } catch (error: any) {
+        return {
+            connected: false,
+            available_slots: [],
+            booking_link: null,
+            error: error.message,
+        };
+    }
+}
+
+async function bookMeeting(
+    userId: string,
+    startTime: string,
+    endTime: string,
+    attendeeEmail: string,
+    attendeeName: string,
+    notes?: string
+): Promise<BookingResult> {
+    try {
+        const response = await fetch(`${BACKEND_URL}/calendar/book`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-User-Id': userId,
+            },
+            body: JSON.stringify({
+                start: startTime,
+                end: endTime,
+                attendee_email: attendeeEmail,
+                attendee_name: attendeeName,
+                notes: notes || '',
+            }),
+        });
+
+        if (!response.ok) {
+            const text = await response.text();
+            return {
+                success: false,
+                error: `Booking failed (${response.status}): ${text}`,
+            };
+        }
+
+        const bookingData = await response.json();
+        return {
+            success: bookingData.success,
+            booking_id: bookingData.booking_id,
+            booking_url: bookingData.booking_url,
+            error: bookingData.error,
+        };
+    } catch (error: any) {
+        return {
+            success: false,
+            error: error.message,
+        };
+    }
+}
+
 // System default prompt - used when no custom prompt is provided
 const DEFAULT_PROMPT = `You are a professional sales representative. Your goal is to engage with prospects, understand their needs, and guide conversations toward scheduling meetings.
 
-Instructions:
+CRITICAL INSTRUCTIONS FOR CALENDAR BOOKING:
+1. You have access to the contact's email and name from the conversation context - NEVER ask for these
+2. When the contact agrees to meet, schedule, or book a meeting, IMMEDIATELY use the bookMeeting tool
+3. Use the contact's email and name from the conversation context - DO NOT ask questions
+4. If they ask about availability, use getCalendarAvailability to show them times
+5. When booking, choose the next available slot that makes sense based on the conversation
+6. After booking, ALWAYS include the booking link in your reply
+7. Be proactive - if they express interest in meeting, book it immediately without asking for confirmation
+
+General Instructions:
 1. ALWAYS respond to every email - your job is to try and keep the conversation going
 2. Read the conversation context carefully and respond appropriately
 3. Be friendly, professional, and consultative
@@ -39,10 +185,12 @@ export interface AgentResponse {
     body: string;
     shouldReply: boolean;
     sentiment: 'positive' | 'neutral' | 'negative' | 'urgent';
+    bookingUrl?: string;  // Booking link if a meeting was booked
+    bookingId?: string;   // Booking ID if a meeting was booked
 }
 
 /**
- * Generate an AI-powered reply using Gemini 2.0 Flash
+ * Generate an AI-powered reply using Gemini 2.0 Flash with calendar tools
  */
 export async function generateAIReply(context: EmailContext): Promise<AgentResponse> {
     // Check all possible env var names for Gemini API key
@@ -65,27 +213,124 @@ export async function generateAIReply(context: EmailContext): Promise<AgentRespo
         // Use custom prompt if provided, otherwise use default
         const basePrompt = context.customPrompt || DEFAULT_PROMPT;
 
-        // Build the full prompt with context
-        const prompt = `${basePrompt}
+        // Extract contact information - CRITICAL: Use these without asking
+        const contactEmail = context.contactEmail;
+        const contactName = context.contactName || contactEmail.split('@')[0] || 'there';
+        const userId = context.userId;
+
+        // Build the full system prompt with contact info
+        // NOTE: userId is NOT exposed to AI - it's only used internally in tool functions
+        const systemPrompt = `${basePrompt}
+
+CONTACT INFORMATION (USE THESE - DO NOT ASK):
+- Contact Email: ${contactEmail}
+- Contact Name: ${contactName}
 
 Context: ${context.campaignContext || 'Business outreach'}
 
 Previous conversation:
 ${historyText || 'No previous messages.'}
 
-Latest email from ${context.contactName || context.contactEmail}:
+Latest email from ${contactName} (${contactEmail}):
 Subject: ${context.replySubject}
 Message: ${context.replyBody}
 
-Reply:`;
+Remember: When they agree to meet, book immediately using contactEmail and contactName above.`;
+
+        // Define calendar tools
+        const tools = {
+            getCalendarAvailability: tool({
+                description: 'Get calendar availability for a specified number of days ahead. Use this when the contact asks about available times, wants to see slots, or asks "when are you available?".',
+                parameters: z.object({
+                    daysAhead: z.number().describe('Number of days to check ahead (default: 30)').optional(),
+                }),
+                execute: async ({ daysAhead = 30 }) => {
+                    const availability = await getCalendarAvailability(userId, daysAhead);
+                    return JSON.stringify(availability, null, 2);
+                },
+            }),
+            bookMeeting: tool({
+                description: 'Book a meeting slot IMMEDIATELY when the contact agrees to meet, wants to schedule, or says yes to a meeting. Use contactEmail and contactName from context - NEVER ask for these. Choose the next available slot that makes sense.',
+                parameters: z.object({
+                    startTime: z.string().describe('Start time in ISO format (e.g., "2024-12-07T14:00:00Z") - use from available slots'),
+                    endTime: z.string().describe('End time in ISO format (e.g., "2024-12-07T14:30:00Z") - use from available slots'),
+                    attendeeEmail: z.string().email().describe('Email address - use the contactEmail from context'),
+                    attendeeName: z.string().describe('Full name - use the contactName from context'),
+                    notes: z.string().optional().describe('Optional notes about the meeting based on conversation context'),
+                }),
+                execute: async ({ startTime, endTime, attendeeEmail, attendeeName, notes }) => {
+                    const result = await bookMeeting(userId, startTime, endTime, attendeeEmail, attendeeName, notes);
+                    return JSON.stringify(result, null, 2);
+                },
+            }),
+        };
+
+        // Set API key in environment for Google AI SDK
+        const originalApiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+        process.env.GOOGLE_GENERATIVE_AI_API_KEY = apiKey;
 
         const result = await generateText({
-            model: google('gemini-2.5-flash-lite', { apiKey }),
-            prompt,
-            maxTokens: 600,
+            model: google('gemini-2.5-flash-lite'),
+            system: systemPrompt,
+            prompt: `Generate a professional reply to the latest email. Use tools if needed to check availability or book meetings.`,
+            tools,
+            maxSteps: 5, // Allow multiple tool calls
+            maxTokens: 1500,
         });
 
-        const responseText = result.text?.trim() || '';
+        // Restore original API key if it was set
+        if (originalApiKey) {
+            process.env.GOOGLE_GENERATIVE_AI_API_KEY = originalApiKey;
+        }
+
+        // Extract response text from the last step
+        let responseText = result.text?.trim() || '';
+        if (result.steps && result.steps.length > 0) {
+            const lastStep = result.steps[result.steps.length - 1];
+            responseText = lastStep.text?.trim() || responseText;
+        }
+
+        // Extract booking information from tool results
+        let bookingUrl: string | undefined;
+        let bookingId: string | undefined;
+        
+        if (result.steps) {
+            for (const step of result.steps) {
+                // Check tool results (not toolCalls)
+                if (step.toolResults) {
+                    for (const toolResult of step.toolResults) {
+                        if (toolResult.toolName === 'bookMeeting' && toolResult.result) {
+                            try {
+                                const bookingResult = typeof toolResult.result === 'string' 
+                                    ? JSON.parse(toolResult.result)
+                                    : toolResult.result;
+                                    
+                                if (bookingResult && bookingResult.success) {
+                                    bookingUrl = bookingResult.booking_url;
+                                    bookingId = bookingResult.booking_id;
+                                    
+                                    // Ensure booking link is in the response text
+                                    if (bookingUrl && !responseText.includes(bookingUrl)) {
+                                        responseText += `\n\nHere's your booking link: ${bookingUrl}`;
+                                    }
+                                }
+                            } catch (e) {
+                                // Try to extract URL from text if result is a string
+                                if (typeof toolResult.result === 'string') {
+                                    const urlMatch = toolResult.result.match(/https?:\/\/[^\s"']+/);
+                                    if (urlMatch) {
+                                        bookingUrl = urlMatch[0];
+                                        if (bookingUrl && !responseText.includes(bookingUrl)) {
+                                            responseText += `\n\nHere's your booking link: ${bookingUrl}`;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         
         // Detect sentiment from the original email (for logging/analytics only)
         const sentiment = quickSentimentCheck(context.replyBody);
@@ -96,6 +341,8 @@ Reply:`;
             body: responseText,
             shouldReply: true,
             sentiment,
+            bookingUrl,
+            bookingId,
         };
 
     } catch (error: any) {

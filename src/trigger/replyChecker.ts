@@ -227,6 +227,7 @@ async function checkCampaignReplies(
                     const emailContext: EmailContext = {
                         originalSubject: replySubject.replace(/^Re:\s*/i, ''),
                         contactEmail: conversation.contact_email,
+                        userId: campaign.user_id, // Add user_id for calendar API calls
                         replySubject: replySubject,
                         replyBody: replyBody,
                         conversationHistory: conversationHistory,
@@ -260,6 +261,11 @@ async function checkCampaignReplies(
                     if (sendResult.success) {
                         autoReplies++;
                         console.log(`AI auto-reply sent to ${conversation.contact_email} (sentiment: ${aiResponse.sentiment})`);
+                        
+                        // Log if a meeting was booked
+                        if (aiResponse.bookingUrl) {
+                            console.log(`📅 Meeting booked! Booking URL: ${aiResponse.bookingUrl}`);
+                        }
 
                         await recordAutoReply({
                             conversation_id: conversation.id,
