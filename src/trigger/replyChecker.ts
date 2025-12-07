@@ -22,6 +22,8 @@ interface Campaign {
     auto_reply_subject: string;
     auto_reply_body: string;
     max_replies_per_thread: number;
+    prompt_id?: string;
+    prompt_text?: string;  // Custom AI prompt (null = use system default)
 }
 
 interface Conversation {
@@ -218,13 +220,6 @@ async function checkCampaignReplies(
                 if (campaign.auto_reply_enabled &&
                     conversation.auto_replies_sent < campaign.max_replies_per_thread) {
                     
-                    // Quick sentiment check - don't reply to unsubscribe requests
-                    const sentiment = quickSentimentCheck(replyBody);
-                    if (sentiment === 'negative') {
-                        console.log(`Skipping reply - negative sentiment detected for ${conversation.contact_email}`);
-                        continue;
-                    }
-
                     // Build conversation history for AI context
                     const conversationHistory = await fetchConversationHistory(conversation.id);
 
@@ -236,6 +231,7 @@ async function checkCampaignReplies(
                         replyBody: replyBody,
                         conversationHistory: conversationHistory,
                         campaignContext: campaign.auto_reply_body, // Use as context hint
+                        customPrompt: campaign.prompt_text, // Custom AI prompt (undefined = use default)
                     };
 
                     console.log(`Generating AI reply for ${conversation.contact_email}...`);

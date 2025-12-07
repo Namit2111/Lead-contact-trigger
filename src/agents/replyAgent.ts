@@ -18,7 +18,21 @@ export interface EmailContext {
         isAutoReply: boolean;
     }>;
     campaignContext?: string;
+    customPrompt?: string;  // Custom AI prompt (undefined = use default)
 }
+
+// System default prompt - used when no custom prompt is provided
+const DEFAULT_PROMPT = `You are a professional sales representative. Your goal is to engage with prospects, understand their needs, and guide conversations toward scheduling meetings.
+
+Instructions:
+1. ALWAYS respond to every email - your job is to try and keep the conversation going
+2. Read the conversation context carefully and respond appropriately
+3. Be friendly, professional, and consultative
+4. Your primary objective is to schedule a meeting when appropriate
+5. Keep replies concise but compelling (3-5 sentences typically)
+6. Address their specific questions or concerns
+7. If they seem uninterested, acknowledge their position but offer value
+8. Never give up - always find a way to continue the conversation`;
 
 export interface AgentResponse {
     subject: string;
@@ -48,7 +62,11 @@ export async function generateAIReply(context: EmailContext): Promise<AgentRespo
             .map((msg, i) => `[${msg.direction.toUpperCase()}]: ${msg.body.substring(0, 300)}`)
             .join('\n\n');
 
-        const prompt = `You are an email assistant. Generate a brief, professional reply to this email.
+        // Use custom prompt if provided, otherwise use default
+        const basePrompt = context.customPrompt || DEFAULT_PROMPT;
+
+        // Build the full prompt with context
+        const prompt = `${basePrompt}
 
 Context: ${context.campaignContext || 'Business outreach'}
 
@@ -58,13 +76,6 @@ ${historyText || 'No previous messages.'}
 Latest email from ${context.contactName || context.contactEmail}:
 Subject: ${context.replySubject}
 Message: ${context.replyBody}
-
-Instructions:
-1. If they want to unsubscribe or say "stop", respond with: SHOULD_NOT_REPLY
-2. Keep your reply SHORT (2-4 sentences max)
-3. Be friendly and professional
-4. Address their specific question/concern if any
-5. Don't be salesy or pushy
 
 Reply:`;
 
@@ -76,19 +87,10 @@ Reply:`;
 
         const responseText = result.text?.trim() || '';
         
-        // Check if AI says don't reply
-        if (responseText.includes('SHOULD_NOT_REPLY')) {
-            return {
-                subject: '',
-                body: '',
-                shouldReply: false,
-                sentiment: 'negative',
-            };
-        }
-
-        // Detect sentiment from the original email
+        // Detect sentiment from the original email (for logging/analytics only)
         const sentiment = quickSentimentCheck(context.replyBody);
 
+        // Always reply - our job is to try
         return {
             subject: `Re: ${context.replySubject.replace(/^Re:\s*/i, '')}`,
             body: responseText,
