@@ -24,6 +24,7 @@ interface Campaign {
     max_replies_per_thread: number;
     prompt_id?: string;
     prompt_text?: string;  // Custom AI prompt (null = use system default)
+    cal_tools_enabled?: boolean;  // Whether AI can use calendar tools (get availability, book meetings)
 }
 
 interface Conversation {
@@ -34,7 +35,9 @@ interface Conversation {
     status: string;
 }
 
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000';
+const BACKEND_URL = process.env.BACKEND_URL || (() => {
+    throw new Error('BACKEND_URL environment variable is required. Set it in your .env file or environment variables.');
+})();
 
 /**
  * Scheduled task to check for replies every minute
@@ -42,7 +45,7 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000';
 export const scheduledReplyChecker = schedules.task({
     id: "scheduled-reply-checker",
     // Run every minute (standard 5-field cron - no seconds allowed)
-    cron: "* * * * *",
+    cron: "0 * * * *",
     run: async () => {
         console.log("Starting scheduled reply check...");
         
@@ -233,6 +236,7 @@ async function checkCampaignReplies(
                         conversationHistory: conversationHistory,
                         campaignContext: campaign.auto_reply_body, // Use as context hint
                         customPrompt: campaign.prompt_text, // Custom AI prompt (undefined = use default)
+                        calToolsEnabled: campaign.cal_tools_enabled ?? false, // Whether AI can use calendar tools
                     };
 
                     console.log(`Generating AI reply for ${conversation.contact_email}...`);

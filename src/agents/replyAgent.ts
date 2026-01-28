@@ -21,9 +21,12 @@ export interface EmailContext {
     }>;
     campaignContext?: string;
     customPrompt?: string;  // Custom AI prompt (undefined = use default)
+    calToolsEnabled?: boolean;  // Whether AI can use calendar tools (get availability, book meetings)
 }
 
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000';
+const BACKEND_URL = process.env.BACKEND_URL || (() => {
+    throw new Error('BACKEND_URL environment variable is required. Set it in your .env file or environment variables.');
+})();
 
 // Calendar helper functions
 interface CalendarAvailability {
@@ -217,14 +220,22 @@ export async function generateAIReply(context: EmailContext): Promise<AgentRespo
         const contactEmail = context.contactEmail;
         const contactName = context.contactName || contactEmail.split('@')[0] || 'there';
         const userId = context.userId;
+        const calToolsEnabled = context.calToolsEnabled ?? false;
+
+        // Get current date for context
+        const currentDate = new Date();
+        const currentDateStr = currentDate.toISOString().split('T')[0];
+        const currentDateTimeStr = currentDate.toISOString();
 
         // Build the full system prompt with contact info
         // NOTE: userId is NOT exposed to AI - it's only used internally in tool functions
-        const systemPrompt = `${basePrompt}
+        let systemPrompt = `${basePrompt}
 
 CONTACT INFORMATION (USE THESE - DO NOT ASK):
 - Contact Email: ${contactEmail}
 - Contact Name: ${contactName}
+
+Today's Date: ${currentDateStr}
 
 Context: ${context.campaignContext || 'Business outreach'}
 
@@ -233,12 +244,20 @@ ${historyText || 'No previous messages.'}
 
 Latest email from ${contactName} (${contactEmail}):
 Subject: ${context.replySubject}
-Message: ${context.replyBody}
+Message: ${context.replyBody}`;
 
+        // Add calendar-specific instructions only if tools are enabled
+        if (calToolsEnabled) {
+            systemPrompt += `
+
+IMPORTANT - CURRENT DATE/TIME: ${currentDateTimeStr}
+When booking meetings, ONLY use times from the getCalendarAvailability tool results.
+These are the ONLY valid future time slots. Do NOT make up times.
 Remember: When they agree to meet, book immediately using contactEmail and contactName above.`;
+        }
 
-        // Define calendar tools
-        const tools = {
+        // Define calendar tools (only if enabled)
+        const tools = calToolsEnabled ? {
             getCalendarAvailability: tool({
                 description: 'Get calendar availability for a specified number of days ahead. Use this when the contact asks about available times, wants to see slots, or asks "when are you available?".',
                 parameters: z.object({
@@ -263,20 +282,29 @@ Remember: When they agree to meet, book immediately using contactEmail and conta
                     return JSON.stringify(result, null, 2);
                 },
             }),
-        };
+        } : undefined;
 
         // Set API key in environment for Google AI SDK
         const originalApiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
         process.env.GOOGLE_GENERATIVE_AI_API_KEY = apiKey;
 
-        const result = await generateText({
+        // Build generate options - only include tools if calendar tools are enabled
+        const generateOptions: any = {
             model: google('gemini-2.5-flash-lite'),
             system: systemPrompt,
-            prompt: `Generate a professional reply to the latest email. Use tools if needed to check availability or book meetings.`,
-            tools,
-            maxSteps: 5, // Allow multiple tool calls
+            prompt: calToolsEnabled
+                ? `Generate a professional reply to the latest email. Use tools if needed to check availability or book meetings.`
+                : `Generate a professional reply to the latest email.`,
             maxTokens: 1500,
-        });
+        };
+
+        // Only add tools if they're defined (when cal_tools_enabled is true)
+        if (tools) {
+            generateOptions.tools = tools;
+            generateOptions.maxSteps = 5; // Allow multiple tool calls
+        }
+
+        const result = await generateText(generateOptions);
 
         // Restore original API key if it was set
         if (originalApiKey) {
@@ -297,8 +325,9 @@ Remember: When they agree to meet, book immediately using contactEmail and conta
         if (result.steps) {
             for (const step of result.steps) {
                 // Check tool results (not toolCalls)
-                if (step.toolResults) {
-                    for (const toolResult of step.toolResults) {
+                const toolResults = (step as any).toolResults;
+                if (toolResults && Array.isArray(toolResults)) {
+                    for (const toolResult of toolResults) {
                         if (toolResult.toolName === 'bookMeeting' && toolResult.result) {
                             try {
                                 const bookingResult = typeof toolResult.result === 'string' 

@@ -1,27 +1,28 @@
 {
-  "name": "trigger",
-  "version": "1.0.0",
-  "type": "module",
-  "main": "index.js",
-  "scripts": {
-    "dev": "npx trigger dev",
-    "build": "tsc",
-    "deploy": "trigger deploy",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
   "author": "",
-  "license": "ISC",
-  "description": "",
   "dependencies": {
     "@ai-sdk/google": "^1.0.0",
-    "@trigger.dev/sdk": "4.1.2",
+    "@trigger.dev/sdk": "4.3.1",
     "ai": "^4.0.0",
     "dotenv": "^17.2.3",
     "zod": "^3.22.4"
   },
+  "description": "",
   "devDependencies": {
     "@types/node": "^24.10.1",
     "tsx": "^4.21.0"
-  }
+  },
+  "keywords": [
+  ],
+  "license": "ISC",
+  "main": "index.js",
+  "name": "trigger",
+  "scripts": {
+    "build": "tsc",
+    "deploy": "trigger deploy",
+    "dev": "npx trigger dev",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "type": "module",
+  "version": "1.0.0"
 }

@@ -74,6 +74,33 @@ export async function sendEmail(
 }
 
 /**
+ * Convert plain text line breaks to HTML for proper email rendering
+ */
+function convertLineBreaksToHtml(text: string): string {
+    // If the text already contains HTML tags, assume it's already formatted
+    if (/<[a-z][\s\S]*>/i.test(text)) {
+        return text;
+    }
+    
+    // Escape HTML entities first to prevent XSS
+    let escaped = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    
+    // Convert line breaks to <br> tags
+    // Handle both \r\n (Windows) and \n (Unix) line endings
+    escaped = escaped
+        .replace(/\r\n/g, '<br>')
+        .replace(/\n/g, '<br>')
+        .replace(/\r/g, '<br>');
+    
+    return escaped;
+}
+
+/**
  * Create base64url encoded RFC 2822 email message
  */
 function createRawEmail(emailData: EmailData): string {
@@ -102,8 +129,11 @@ function createRawEmail(emailData: EmailData): string {
         'Content-Type: text/html; charset=UTF-8',
     );
     
+    // Convert line breaks to HTML before sending
+    const htmlBody = convertLineBreaksToHtml(body);
+    
     // Join headers, add blank line, then body
-    const message = headerParts.join('\r\n') + '\r\n\r\n' + body;
+    const message = headerParts.join('\r\n') + '\r\n\r\n' + htmlBody;
 
     // Convert to base64url format
     const base64 = Buffer.from(message).toString('base64');

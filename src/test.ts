@@ -17,6 +17,7 @@ async function testEmailCampaign() {
         accessToken: process.env.TEST_ACCESS_TOKEN || 'test-token',
         refreshToken: process.env.TEST_REFRESH_TOKEN,
         tokenExpiry: new Date(Date.now() + 3600000).toISOString(), // 1 hour from now
+        // Note: For production, set BACKEND_URL environment variable (e.g., https://lead-contact.onrender.com)
         backendUrl: process.env.BACKEND_URL || 'http://localhost:8000',
     };
 

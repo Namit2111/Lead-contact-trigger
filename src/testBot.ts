@@ -12,6 +12,8 @@ import { z } from 'zod';
 import * as readline from 'readline';
 
 // Configuration
+// Note: For production, set BACKEND_URL environment variable (e.g., https://lead-contact.onrender.com)
+// localhost fallback is only for local testing
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000';
 const USER_ID = process.env.TEST_USER_ID || '691cdc31fb39528053b632d7'; // send as X-User-Id header
 
